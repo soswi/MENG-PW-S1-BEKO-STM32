@@ -1,0 +1,52 @@
+# Custom backup folders to ignore
+BEKO2026_v1/
+BEKO2026v3/
+BEKO2026v4/
+BEKO2026v5_BACKUP/
+BEKO2026_BACKUP_Initial/
+BEKO2026v5_BACKUP_111032026/
+
+# STM32CubeIDE Build Output
+Debug/
+Release/
+build/
+bin/
+obj/
+
+# Binaries and Objects
+*.elf
+*.bin
+*.hex
+*.o
+*.obj
+*.a
+*.lib
+*.lo
+*.la
+
+# Map and List files
+*.map
+*.list
+*.lst
+
+# Dependency and Stack Usage files
+*.d
+*.su
+
+# IDE Settings (Keep .project, .cproject, .mxproject for easy import)
+.settings/
+.metadata/
+*.launch
+
+# Temporary files
+*.bak
+*.tmp
+*~
+*.swp
+
+# Explicitly keep Core directory and its contents (Source Files)
+!**/Core/
+!**/Core/**
+!.settings/
+!.settings/**
+
