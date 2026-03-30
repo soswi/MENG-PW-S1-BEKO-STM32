@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": true,
+      "cwd": "c:/Users/soswi/STM32CubeIDE/workspace_1.19.0/STM32CubeExpansion_Crypto_V4.6.0/Projects/NUCLEO-U575ZI-Q/Applications/Hash/SHA2_Digest/Src",
+      "program": "c:/Users/soswi/STM32CubeIDE/workspace_1.19.0/STM32CubeExpansion_Crypto_V4.6.0/Projects/NUCLEO-U575ZI-Q/Applications/Hash/SHA2_Digest/Src/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
