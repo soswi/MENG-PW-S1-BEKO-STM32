@@ -18,8 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "serwo.h"
-
+#include "cmox_crypto.h"
+#include <string.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -41,6 +41,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+
+CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -66,8 +68,11 @@ static void MX_I2C1_Init(void);
 static void MX_RTC_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_CRC_Init(void);
 /* USER CODE BEGIN PFP */
-
+cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *key, size_t key_len,
+                                        const uint8_t *data, size_t data_len,
+                                        uint8_t *output_hmac);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -97,7 +102,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  
   /* USER CODE END Init */
 
   /* Configure the System Power */
@@ -118,8 +123,32 @@ int main(void)
   MX_RTC_Init();
   MX_SPI1_Init();
   MX_TIM2_Init();
+  MX_CRC_Init();
+  
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+  cmox_init_arg_t init_target = {CMOX_INIT_TARGET_AUTO, NULL};
+
+  /* Initialize cryptographic library */
+  if (cmox_initialize(&init_target) != CMOX_INIT_SUCCESS)
+  {
+    Error_Handler();
+  }
+
+
+  uint8_t my_key[16] = "secret_key_1234";
+  uint8_t my_data[] = "Wiadomosc do autoryzacji";
+  uint8_t result[32];
+
+
+  if (calculate_hmac_sha256(my_key, 16, my_data, sizeof(my_data), result) == CMOX_MAC_SUCCESS) 
+  {
+    printf("HMAC-SHA256: ");
+  }
+  else
+  {
+    printf("HMAC!\r\n");
+  }
 
 
 
@@ -137,9 +166,9 @@ int main(void)
 //		   HAL_Delay(1500);
 //		}
 
-		HAL_Delay(5000);
+		/* HAL_Delay(5000);
 		printf("Start App\n");
-		app_main();
+		app_main(); */
 //		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
 //		HAL_Delay(2000);
 //
@@ -154,6 +183,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
   }
+  cmox_finalize(NULL);
   /* USER CODE END 3 */
 }
 
@@ -220,6 +250,37 @@ static void SystemPower_Config(void)
   }
 /* USER CODE BEGIN PWR */
 /* USER CODE END PWR */
+}
+
+/**
+  * @brief CRC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CRC_Init(void)
+{
+
+  /* USER CODE BEGIN CRC_Init 0 */
+
+  /* USER CODE END CRC_Init 0 */
+
+  /* USER CODE BEGIN CRC_Init 1 */
+
+  /* USER CODE END CRC_Init 1 */
+  hcrc.Instance = CRC;
+  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
+  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
+  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+  if (HAL_CRC_Init(&hcrc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CRC_Init 2 */
+
+  /* USER CODE END CRC_Init 2 */
+
 }
 
 /**
@@ -559,6 +620,27 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief Oblicza HMAC-SHA256 (Single Call)
+ * @param pKey       Wskaźnik na klucz
+ * @param keyLen     Długość klucza w bajtach
+ * @param pData      Wskaźnik na dane do podpisania
+ * @param dataLen    Długość danych w bajtach
+ * @param pOutTag    Bufor na wynikowy MAC (32 bajty dla SHA256)
+ * @return cmox_mac_retval_t Status operacji (CMOX_MAC_SUCCESS = OK)
+ */
+cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *pKey, size_t keyLen, const uint8_t *pData, size_t dataLen, uint8_t *pOutTag)
+{
+  size_t computed_size;
+  
+  return cmox_mac_compute(CMOX_HMAC_SHA256_ALGO, // Algorytm z przykładu
+                          pData, dataLen,        // Dane wejściowe
+                          pKey, keyLen,          // Klucz HMAC
+                          NULL, 0,               // Dane dodatkowe (opcjonalne)
+                          pOutTag, 32,           // Bufor wyjściowy i oczekiwany rozmiar
+                          &computed_size);       // Zapisany faktyczny rozmiar
+}
 
 /* USER CODE END 4 */
 
