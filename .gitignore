@@ -44,9 +44,21 @@ obj/
 *~
 *.swp
 
+STM32CubeExpansion_Crypto_V4.6.0/
+STM32CubeExpansion_Crypto_V4.6.0/**
+
+x-cube-cryptolib-4-6-0.zip
+
+/BEKO2026v5/Hash
+/BEKO2026v5/Hash/**
+
+/BEKO2026v5/Drivers/STM32U5xx_HAL_Driver
+/BEKO2026v5/Drivers/STM32U5xx_HAL_Driver/**
+
 # Explicitly keep Core directory and its contents (Source Files)
 !**/Core/
 !**/Core/**
 !.settings/
 !.settings/**
 
+!/BEKO2026v5/STM32_Cryptographic/lib/*.a
