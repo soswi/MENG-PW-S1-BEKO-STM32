@@ -18,11 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmox_crypto.h"
-#include <string.h>
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "cmox_crypto.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -135,6 +135,7 @@ int main(void)
     Error_Handler();
   }
 
+  
 
   uint8_t my_key[16] = "secret_key_1234";
   uint8_t my_data[] = "Wiadomosc do autoryzacji";
@@ -166,9 +167,9 @@ int main(void)
 //		   HAL_Delay(1500);
 //		}
 
-		/* HAL_Delay(5000);
+		HAL_Delay(5000);
 		printf("Start App\n");
-		app_main(); */
+		app_main();
 //		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
 //		HAL_Delay(2000);
 //
