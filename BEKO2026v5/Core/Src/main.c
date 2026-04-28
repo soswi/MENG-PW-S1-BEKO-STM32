@@ -22,7 +22,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cmox_crypto.h"
+#include "crypto_layer.h"
+#include "app_template.h"
 #include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -125,33 +128,41 @@ int main(void)
   MX_TIM2_Init();
   MX_CRC_Init();
   
-  /* USER CODE BEGIN 2 */
+/* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
   cmox_init_arg_t init_target = {CMOX_INIT_TARGET_AUTO, NULL};
 
-  /* Initialize cryptographic library */
   if (cmox_initialize(&init_target) != CMOX_INIT_SUCCESS)
   {
     Error_Handler();
   }
 
-  
+  /* --- DEMO: AES-128-CTR + HMAC-SHA256 --- */
+  static const uint8_t aes_key[16] = {
+      0xAE,0x68,0x52,0xF8,0x12,0x10,0x67,0xCC,
+      0x4B,0xF7,0xA5,0x76,0x55,0x77,0xF3,0x9E
+  };
 
-  uint8_t my_key[16] = "secret_key_1234";
-  uint8_t my_data[] = "Wiadomosc do autoryzacji";
-  uint8_t result[32];
+  crypto_self_test();
+  crypto_init(aes_key);
 
+  const char *msg = "BEKO_AZI=090";
+  encrypted_data_t pkt;
+  uint8_t dec_buf[CRYPTO_MAX_DATA];
+  size_t  dec_len = 0;
 
-  if (calculate_hmac_sha256(my_key, 16, my_data, sizeof(my_data), result) == CMOX_MAC_SUCCESS) 
+  if (crypto_encrypt((const uint8_t *)msg, strlen(msg), &pkt) == 0)
   {
-    printf("HMAC-SHA256: ");
+      printf("TX gotowy. Rozmiar pakietu: %d B\r\n",
+             16 + CRYPTO_MIC_SIZE + pkt.ciphertext_len);
   }
-  else
+
+  if (crypto_decrypt(&pkt, pkt.ciphertext_len, dec_buf, &dec_len) == 0)
   {
-    printf("HMAC!\r\n");
+      dec_buf[dec_len] = '\0';
+      printf("RX odszyfrowano: \"%s\"\r\n", (char *)dec_buf);
   }
-
-
+  /* --- koniec DEMO --- */
 
   /* USER CODE END 2 */
 
