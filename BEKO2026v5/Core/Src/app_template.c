@@ -19,9 +19,10 @@ Maintainer: Miguel Luis and Gregory Cristian
 #include "lcd.h"
 #include "stm32u5xx_hal.h"
 #include "serwo.h"
+#include "crypto_layer.h"
 
-#define RF_FREQUENCY                                870000000 // Hz
-#define TX_OUTPUT_POWER                             0         // dBm
+#define RF_FREQUENCY                                868000000 // Hz
+#define TX_OUTPUT_POWER                             17         // dBm
 
 #if defined( USE_MODEM_LORA )
 
@@ -41,10 +42,10 @@ Maintainer: Miguel Luis and Gregory Cristian
 
 #elif defined( USE_MODEM_FSK )
 
-#define FSK_FDEV            						5e3       // 5 kHz  (h = 2*FDEV/BR = 1.0)
-#define FSK_DATARATE        						10e3      // 10 kbps
-#define FSK_BANDWIDTH       						50e3      // 50 kHz
-#define FSK_AFC_BANDWIDTH   						83.333e3  // OK
+#define FSK_FDEV            						4800      // 4.8 kHz  (h = 2*FDEV/BR = 1.0)
+#define FSK_DATARATE        						4800      // 4.8 kbps
+#define FSK_BANDWIDTH       						9600      // 9.6 kHz
+#define FSK_AFC_BANDWIDTH   						9600      // OK
 #define FSK_PREAMBLE_LENGTH 						10        //
 #define FSK_FIX_LENGTH_PAYLOAD_ON 					false
 
@@ -64,7 +65,61 @@ typedef enum
 }States_t;
 
 #define RX_TIMEOUT_VALUE                            1000
-#define BUFFER_SIZE                                 13
+#define BUFFER_SIZE                                 64
+
+// Frame types
+#define FRAME_TYPE_CMD      0x01
+#define FRAME_TYPE_TELEM    0x02
+#define FRAME_TYPE_ALARM    0x03
+#define FRAME_TYPE_ACK      0x04
+
+// Nodes addresses
+#define ADDR_CENTRAL        0x01       // Raspberry Pi
+#define ADDR_NODE1          0x02       // STM32 node 1
+
+// Frame structure (packed — no padding)
+typedef struct __attribute__((packed)) {
+    uint8_t  type;          // Frame type (1B)
+    uint16_t counter;       // Sequence counter (2B, big-endian)
+    uint8_t  flags;         // Flags (1B)
+    uint8_t  data[32];       // Payload (32B)
+    uint8_t  data_len;      // Length of actual data in data[]
+    uint16_t crc;           // CRC-16 (2B)
+    uint8_t  dst;           // Destination address (1B)
+    uint8_t  src;           // Source address (1B)
+} beko_frame_t;
+
+// Prosty CRC-16 (XOR kolejnych bajtów << 8, wystarczy na start)
+static uint16_t calc_crc16(const uint8_t *buf, uint16_t len)
+{
+    uint16_t crc = 0xFFFF;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)buf[i] << 8;
+        for (int j = 0; j < 8; j++)
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1);
+    }
+    return crc;
+}
+
+// Buduje ramkę do bufora tx, zwraca długość
+static uint8_t build_frame(uint8_t *out, uint8_t type, uint16_t counter,
+                            uint8_t flags, const uint8_t *data, uint8_t data_len,
+                            uint8_t dst, uint8_t src)
+{
+    beko_frame_t f;
+    memset(&f, 0, sizeof(f));
+    f.type     = type;
+    f.counter  = counter;
+    f.flags    = flags;
+    f.data_len = data_len;
+    if (data && data_len)
+        memcpy(f.data, data, data_len < 32 ? data_len : 32);
+    f.dst = dst;
+    f.src = src;
+    f.crc = calc_crc16((uint8_t*)&f, offsetof(beko_frame_t, crc));
+    memcpy(out, &f, sizeof(f));
+    return (uint8_t)sizeof(beko_frame_t);
+}
 
 States_t State = LOWPOWER;
 
@@ -165,7 +220,7 @@ void app_main( void )
 						0,								/* Sets the coding rate (LoRa only) FSK: N/A ( set to 0 ) */
                         FSK_PREAMBLE_LENGTH,			/* Sets the preamble length. FSK: Number of bytes */
 						FSK_FIX_LENGTH_PAYLOAD_ON,		/* Fixed length packets [0: variable, 1: fixed] */
-						false,							/* Enables disables the CRC [0: OFF, 1: ON] */
+						true,							/* Enables disables the CRC [0: OFF, 1: ON] */
 						0,								/* Enables disables the intra-packet frequency hopping. FSK: N/A ( set to 0 ) */
 						0,								/* Number of symbols bewteen each hop. FSK: N/A ( set to 0 ) */
 						0,								/* Inverts IQ signals (LoRa only). FSK: N/A ( set to 0 ) */
@@ -181,7 +236,7 @@ void app_main( void )
 						0,								/* Sets the RxSingle timeout value (LoRa only). FSK: N/A ( set to 0 ) */
 						FSK_FIX_LENGTH_PAYLOAD_ON,		/* Fixed length packets [0: variable, 1: fixed] */
 						0,								/* Sets payload length when fixed lenght is used. */
-						false,							/* Enables/Disables the CRC [0: OFF, 1: ON] */
+						true,							/* Enables/Disables the CRC [0: OFF, 1: ON] */
                         0,								/* Enables disables the intra-packet frequency hopping. FSK: N/A ( set to 0 ) */
 						0,								/* Number of symbols bewteen each hop. FSK: N/A ( set to 0 ) */
 						false,							/* Inverts IQ signals (LoRa only). FSK: N/A ( set to 0 ) */
@@ -193,8 +248,8 @@ void app_main( void )
 #endif
     
 
-//    tx_loop();
-    rx_loop();
+    tx_loop();
+//    rx_loop();
 
     while(1)
     {
@@ -204,21 +259,52 @@ void app_main( void )
 
 void tx_loop(void)
 {
-	uint8_t buf[50];
-	uint8_t txt[] = "NICK-xxxxxxxx-PozdrowieniaNICK";
-	memcpy(buf, txt, sizeof(txt));
-	int cnt = 0;
-    while( 1 )
+    static const uint8_t aes_key[16] = {
+        0xAE,0x68,0x52,0xF8,0x12,0x10,0x67,0xCC,
+        0x4B,0xF7,0xA5,0x76,0x55,0x77,0xF3,0x9E
+    };
+
+    crypto_init(aes_key);
+
+    uint8_t tx_buf[128];
+    uint16_t seq = 0;
+
+    printf("TX loop start (z szyfrowaniem)\r\n");
+
+    while(1)
     {
-        RtcGetTimeStr(buf+5);
+        uint8_t plaintext[] = "AZI=090";
+        encrypted_data_t enc;
 
-        Radio.Send( buf, 13 );
+        if (crypto_encrypt(plaintext, 7, &enc) != 0) {
+            printf("Blad szyfrowania!\r\n");
+            HAL_Delay(3000);
+            continue;
+        }
 
-        DelayMs( 250 );
-        cnt++;
+        // Spakuj IV + CT + MIC do bufora
+        uint8_t enc_buf[16 + 12 + 4];
+        uint8_t enc_len = 0;
+        memcpy(enc_buf,            enc.iv,         16);
+        enc_len += 16;
+        memcpy(enc_buf + enc_len,  enc.ciphertext, enc.ciphertext_len);
+        enc_len += enc.ciphertext_len;
+        memcpy(enc_buf + enc_len,  enc.mic,        4);
+        enc_len += 4;
+
+        printf("TX: seq=%d enc_len=%d (IV+CT+MIC)\r\n", seq, enc_len);
+
+        uint8_t frame_len = build_frame(tx_buf,
+                                        FRAME_TYPE_CMD,
+                                        seq++,
+                                        0x00,
+                                        enc_buf, enc_len,
+                                        ADDR_CENTRAL,
+                                        ADDR_NODE1);
+
+        Radio.Send(tx_buf, frame_len);
         HAL_Delay(3000);
     }
-
 }
 
 void rx_loop(void)
