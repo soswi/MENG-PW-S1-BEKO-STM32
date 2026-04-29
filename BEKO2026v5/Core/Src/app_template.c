@@ -20,7 +20,7 @@ Maintainer: Miguel Luis and Gregory Cristian
 #include "stm32u5xx_hal.h"
 #include "serwo.h"
 
-#define RF_FREQUENCY                                870000000 // Hz
+#define RF_FREQUENCY                                868000000 // Hz
 #define TX_OUTPUT_POWER                             0         // dBm
 
 #if defined( USE_MODEM_LORA )
@@ -229,7 +229,7 @@ void rx_loop(void)
 	printf("\r\n\r\nRX loop start\r\n");
 	int time_on_air;
 	int payload_size = BUFFER_SIZE;
-	time_on_air = Radio.TimeOnAir(MODEM_FSK, payload_size);
+	time_on_air = Radio.TimeOnAir(MODEM_LORA, payload_size);
 	printf("Time on air: %d us for payload_size: %d bytes\r\n", time_on_air, payload_size);
 
 	lcd_init();
@@ -253,23 +253,25 @@ void rx_loop(void)
 
 		if (State == RX_DONE)
 		{
+		    lcd_clear();
+		    lcd_set_cursor(0, 0);
+		    lcd_write_string((uint8_t*)buf);
+		    lcd_set_cursor(1, 0);
+		    lcd_write_string(Buffer);
 
-			lcd_clear();
-			lcd_set_cursor(0, 0);
-			lcd_write_string((uint8_t*)buf);
-			lcd_set_cursor(1, 0);
-			lcd_write_string(Buffer);
+		    printf("%s  \t", buf);
+		    RtcGetTimeStr((uint8_t*)buf);
+		    printf("Local time: %s, received: %s\r\n", buf, Buffer);
 
-			printf("%s  \t", buf);
-			RtcGetTimeStr((uint8_t*)buf);
-			printf("Local time: %s, received: %s\r\n", buf, Buffer);
-			State = RX;
+		    // Wypisz odebrane dane w hex
+		    printf("HEX [%d bytes]: ", BufferSize);
+		    for (int i = 0; i < BufferSize; i++)
+		    {
+		        printf("%02X ", (uint8_t)Buffer[i]);
+		    }
+		    printf("\r\n");
 
-//			if(Buffer[0]) {
-//					__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(15));
-//				} else {
-//					__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(160));
-//			}
+		    State = RX;
 		}
 
 		loop_cnt++;
