@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
+  * Copyright (c) 2024 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -21,11 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "cmox_crypto.h"
-#include "crypto_layer.h"
-#include "app_template.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,20 +43,25 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-
-CRC_HandleTypeDef hcrc;
-
-I2C_HandleTypeDef hi2c1;
-
-RTC_HandleTypeDef hrtc;
-
-SPI_HandleTypeDef hspi1;
-
-TIM_HandleTypeDef htim2;
+ADC_HandleTypeDef hadc1;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart3;
+
+HCD_HandleTypeDef hhcd_USB_DRD_FS;
 
 /* USER CODE BEGIN PV */
+// Buffers for USART3
+// Global variables
+bool connectedToTTN = false; // Flag to indicate TTN connection
+#define RX_BUFFER_SIZE 256
+uint8_t rx_buffer[1];       // Buffer for receiving one byte
+char rx_accumulated[RX_BUFFER_SIZE]; // Accumulated buffer
+volatile uint16_t rx_index = 0;      // Index for accumulated buffer
+
+#define TX_BUFFER_SIZE 256
+char tx_buffer[TX_BUFFER_SIZE]; // Buffer for transmission
+volatile bool tx_busy = false; // Transmission state flag
 
 /* USER CODE END PV */
 
@@ -65,27 +69,87 @@ UART_HandleTypeDef huart1;
 void SystemClock_Config(void);
 static void SystemPower_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
 static void MX_ICACHE_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_I2C1_Init(void);
-static void MX_RTC_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_TIM2_Init(void);
-static void MX_CRC_Init(void);
+static void MX_USB_DRD_FS_HCD_Init(void);
+static void MX_MEMORYMAP_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
-cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *key, size_t key_len,
-                                        const uint8_t *data, size_t data_len,
-                                        uint8_t *output_hmac);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-int _write(int file, char *ptr, int len)
-{
-    (void)file;
-    HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
-    return len;
+int __io_putchar(int ch) {
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    return ch;
 }
+
+// Callback for UART reception complete
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+//    if (huart->Instance == USART3) {
+//        // Send received data to USART1
+//        HAL_UART_Transmit(&huart1, &rx_buffer[0], 1, HAL_MAX_DELAY);
+//
+//        // Restart reception
+//        HAL_UART_Receive_IT(&huart3, rx_buffer, 1);
+//    }
+//}
+
+// Callback for UART reception complete
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART3) {
+        // Accumulate received character
+        rx_accumulated[rx_index++] = rx_buffer[0];
+        HAL_UART_Transmit(&huart1, &rx_buffer[0], 1, HAL_MAX_DELAY);
+
+        // Check for line termination
+        if (rx_buffer[0] == '\n' || rx_index >= RX_BUFFER_SIZE - 1) {
+            rx_accumulated[rx_index] = '\0'; // Null-terminate the string
+            rx_index = 0; // Reset the index
+
+            // Check for "+JOIN: Done" in the received data
+            if (strstr(rx_accumulated, "+JOIN: Network joined") != NULL) {
+                connectedToTTN = true;
+                printf("Connected to TTN!\r\n");
+            }
+        }
+
+        // Restart reception for the next character
+        HAL_UART_Receive_IT(&huart3, rx_buffer, 1);
+    }
+}
+
+// LoRa configuration via USART3
+void connectToTTN(void) {
+    printf("Starting LoRa setup...\r\n");
+
+    char *commands[] = {
+        "AT+ID=DevEui\r\n",
+        "AT+ID=AppEui\r\n",
+        "AT+DR=EU868\r\n",
+        "AT+CH=NUM,0-2\r\n",
+        "AT+MODE=LWOTAA\r\n",
+        "AT+KEY=APPKEY,\"DF8B3666607BCD50B481A1E2CC81C270\"\r\n",
+        "AT+ID\r\n",
+		"AT+POWER?\r\n",
+        "AT+JOIN\r\n"
+    };
+
+    for (int i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+    	HAL_UART_Transmit(&huart1, (uint8_t *)commands[i], strlen(commands[i]), HAL_MAX_DELAY);
+        HAL_UART_Transmit(&huart3, (uint8_t *)commands[i], strlen(commands[i]), HAL_MAX_DELAY);
+        HAL_Delay(1000);
+    }
+}
+
+void sendMessage(const char* message)
+{
+	HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+	HAL_UART_Transmit(&huart3, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -94,7 +158,6 @@ int _write(int file, char *ptr, int len)
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -105,14 +168,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  
-  /* USER CODE END Init */
 
-  /* Configure the System Power */
-  SystemPower_Config();
+  /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
+
+  /* Configure the System Power */
+  SystemPower_Config();
 
   /* USER CODE BEGIN SysInit */
 
@@ -120,82 +183,39 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_ADC1_Init();
   MX_ICACHE_Init();
   MX_USART1_UART_Init();
-  MX_I2C1_Init();
-  MX_RTC_Init();
-  MX_SPI1_Init();
-  MX_TIM2_Init();
-  MX_CRC_Init();
-  
-/* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-  cmox_init_arg_t init_target = {CMOX_INIT_TARGET_AUTO, NULL};
+  MX_USB_DRD_FS_HCD_Init();
+  MX_MEMORYMAP_Init();
+  MX_USART3_UART_Init();
+  /* USER CODE BEGIN 2 */
 
-  if (cmox_initialize(&init_target) != CMOX_INIT_SUCCESS)
-  {
-    Error_Handler();
-  }
-
-  /* --- DEMO: AES-128-CTR + HMAC-SHA256 --- */
-  static const uint8_t aes_key[16] = {
-      0xAE,0x68,0x52,0xF8,0x12,0x10,0x67,0xCC,
-      0x4B,0xF7,0xA5,0x76,0x55,0x77,0xF3,0x9E
-  };
-
-  crypto_self_test();
-  crypto_init(aes_key);
-
-  const char *msg = "BEKO_AZI=090";
-  encrypted_data_t pkt;
-  uint8_t dec_buf[CRYPTO_MAX_DATA];
-  size_t  dec_len = 0;
-
-  if (crypto_encrypt((const uint8_t *)msg, strlen(msg), &pkt) == 0)
-  {
-      printf("TX gotowy. Rozmiar pakietu: %d B\r\n",
-             16 + CRYPTO_MIC_SIZE + pkt.ciphertext_len);
-  }
-
-  if (crypto_decrypt(&pkt, pkt.ciphertext_len, dec_buf, &dec_len) == 0)
-  {
-      dec_buf[dec_len] = '\0';
-      printf("RX odszyfrowano: \"%s\"\r\n", (char *)dec_buf);
-  }
-  /* --- koniec DEMO --- */
+  // Start USART3 in interrupt mode
+  HAL_UART_Receive_IT(&huart3, rx_buffer, 1);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-
   while (1)
   {
-//		for (int degree = 0; degree <= SERVO_DEGREES_RANGE; degree += SERVO_DEBUG_STEP)
-//		{
-//		   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(degree));
-//		   printf("PWM = %d\r\n", degree);
-//		   HAL_Delay(1500);
-//		}
+	  while (!connectedToTTN)
+	  {
+		  connectToTTN();
+		  HAL_Delay(10000);
+	  }
 
-		HAL_Delay(5000);
-		printf("Start App\n");
-		app_main();
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
-//		HAL_Delay(2000);
-//
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1500);
-//		HAL_Delay(2000);
-//
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 2000);
-//	    HAL_Delay(2000);
-//	  const char msg[] = "UART test\r\n";
-//	  HAL_UART_Transmit(&huart1, (uint8_t*)msg, sizeof(msg)-1, HAL_MAX_DELAY);
+	  HAL_Delay(1000);
+
+	  sendMessage("AT+MSG=Hello_TTN\r\n");
+
+
+	  HAL_Delay(10000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
-  cmox_finalize(NULL);
   /* USER CODE END 3 */
 }
 
@@ -210,19 +230,21 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE4) != HAL_OK)
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE3) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI
+                              |RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_4;
-  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -265,81 +287,64 @@ static void SystemPower_Config(void)
 }
 
 /**
-  * @brief CRC Initialization Function
+  * @brief ADC1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_CRC_Init(void)
+static void MX_ADC1_Init(void)
 {
 
-  /* USER CODE BEGIN CRC_Init 0 */
+  /* USER CODE BEGIN ADC1_Init 0 */
 
-  /* USER CODE END CRC_Init 0 */
+  /* USER CODE END ADC1_Init 0 */
 
-  /* USER CODE BEGIN CRC_Init 1 */
+  ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE END CRC_Init 1 */
-  hcrc.Instance = CRC;
-  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
-  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
-  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
-  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
-  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
-  if (HAL_CRC_Init(&hcrc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN CRC_Init 2 */
+  /* USER CODE BEGIN ADC1_Init 1 */
 
-  /* USER CODE END CRC_Init 2 */
+  /* USER CODE END ADC1_Init 1 */
 
-}
-
-/**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
+  /** Common config
   */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00000004;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.Resolution = ADC_RESOLUTION_14B;
+  hadc1.Init.GainCompensation = 0;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_HIGH;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
+  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;
+  hadc1.Init.OversamplingMode = DISABLE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Configure Analogue filter
+  /** Configure Regular Channel
   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_5CYCLE;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN ADC1_Init 2 */
 
-  /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
+  /* USER CODE END ADC1_Init 2 */
 
 }
 
@@ -376,166 +381,23 @@ static void MX_ICACHE_Init(void)
 }
 
 /**
-  * @brief RTC Initialization Function
+  * @brief MEMORYMAP Initialization Function
   * @param None
   * @retval None
   */
-static void MX_RTC_Init(void)
+static void MX_MEMORYMAP_Init(void)
 {
 
-  /* USER CODE BEGIN RTC_Init 0 */
+  /* USER CODE BEGIN MEMORYMAP_Init 0 */
 
-  /* USER CODE END RTC_Init 0 */
+  /* USER CODE END MEMORYMAP_Init 0 */
 
-  RTC_PrivilegeStateTypeDef privilegeState = {0};
+  /* USER CODE BEGIN MEMORYMAP_Init 1 */
 
-  /* USER CODE BEGIN RTC_Init 1 */
+  /* USER CODE END MEMORYMAP_Init 1 */
+  /* USER CODE BEGIN MEMORYMAP_Init 2 */
 
-  /* USER CODE END RTC_Init 1 */
-
-  /** Initialize RTC Only
-  */
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  hrtc.Init.OutPutPullUp = RTC_OUTPUT_PULLUP_NONE;
-  hrtc.Init.BinMode = RTC_BINARY_NONE;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  privilegeState.rtcPrivilegeFull = RTC_PRIVILEGE_FULL_NO;
-  privilegeState.backupRegisterPrivZone = RTC_PRIVILEGE_BKUP_ZONE_NONE;
-  privilegeState.backupRegisterStartZone2 = RTC_BKP_DR0;
-  privilegeState.backupRegisterStartZone3 = RTC_BKP_DR0;
-  if (HAL_RTCEx_PrivilegeModeSet(&hrtc, &privilegeState) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN RTC_Init 2 */
-
-  /* USER CODE END RTC_Init 2 */
-
-}
-
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  SPI_AutonomousModeConfTypeDef HAL_SPI_AutonomousMode_Cfg_Struct = {0};
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 0x7;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
-  hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
-  hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
-  hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
-  hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
-  hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
-  hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
-  hspi1.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
-  hspi1.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerState = SPI_AUTO_MODE_DISABLE;
-  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerSelection = SPI_GRP1_GPDMA_CH0_TCF_TRG;
-  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerPolarity = SPI_TRIG_POLARITY_RISING;
-  if (HAL_SPIEx_SetConfigAutonomousMode(&hspi1, &HAL_SPI_AutonomousMode_Cfg_Struct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM2_Init(void)
-{
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM2_Init 1 */
-
-  /* USER CODE END TIM2_Init 1 */
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 3;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 19999;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM2_Init 2 */
-
-  /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
+  /* USER CODE END MEMORYMAP_Init 2 */
 
 }
 
@@ -588,6 +450,89 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 9600;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief USB_DRD_FS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_DRD_FS_HCD_Init(void)
+{
+
+  /* USER CODE BEGIN USB_DRD_FS_Init 0 */
+
+  /* USER CODE END USB_DRD_FS_Init 0 */
+
+  /* USER CODE BEGIN USB_DRD_FS_Init 1 */
+
+  /* USER CODE END USB_DRD_FS_Init 1 */
+  hhcd_USB_DRD_FS.Instance = USB_DRD_FS;
+  hhcd_USB_DRD_FS.Init.dev_endpoints = 8;
+  hhcd_USB_DRD_FS.Init.Host_channels = 8;
+  hhcd_USB_DRD_FS.Init.speed = HCD_SPEED_FULL;
+  hhcd_USB_DRD_FS.Init.phy_itface = HCD_PHY_EMBEDDED;
+  hhcd_USB_DRD_FS.Init.Sof_enable = DISABLE;
+  hhcd_USB_DRD_FS.Init.low_power_enable = DISABLE;
+  hhcd_USB_DRD_FS.Init.vbus_sensing_enable = DISABLE;
+  hhcd_USB_DRD_FS.Init.bulk_doublebuffer_enable = DISABLE;
+  hhcd_USB_DRD_FS.Init.iso_singlebuffer_enable = DISABLE;
+  if (HAL_HCD_Init(&hhcd_USB_DRD_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_DRD_FS_Init 2 */
+
+  /* USER CODE END USB_DRD_FS_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -595,9 +540,8 @@ static void MX_USART1_UART_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -605,54 +549,26 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : USER_BUTTON_Pin */
   GPIO_InitStruct.Pin = USER_BUTTON_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_BUTTON_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  /*Configure GPIO pin : LED_GREEN_Pin */
+  GPIO_InitStruct.Pin = LED_GREEN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(LED_GREEN_GPIO_Port, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
-/**
- * @brief Oblicza HMAC-SHA256 (Single Call)
- * @param pKey       Wskaźnik na klucz
- * @param keyLen     Długość klucza w bajtach
- * @param pData      Wskaźnik na dane do podpisania
- * @param dataLen    Długość danych w bajtach
- * @param pOutTag    Bufor na wynikowy MAC (32 bajty dla SHA256)
- * @return cmox_mac_retval_t Status operacji (CMOX_MAC_SUCCESS = OK)
- */
-cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *pKey, size_t keyLen, const uint8_t *pData, size_t dataLen, uint8_t *pOutTag)
-{
-  size_t computed_size;
-  
-  return cmox_mac_compute(CMOX_HMAC_SHA256_ALGO, // Algorytm z przykładu
-                          pData, dataLen,        // Dane wejściowe
-                          pKey, keyLen,          // Klucz HMAC
-                          NULL, 0,               // Dane dodatkowe (opcjonalne)
-                          pOutTag, 32,           // Bufor wyjściowy i oczekiwany rozmiar
-                          &computed_size);       // Zapisany faktyczny rozmiar
-}
 
 /* USER CODE END 4 */
 
@@ -670,7 +586,8 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-#ifdef USE_FULL_ASSERT
+
+#ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
