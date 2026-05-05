@@ -78,7 +78,10 @@ typedef enum
 #define ADDR_NODE1          0x02       // STM32 node 1
 
 // Flags
-#define TX_RX_TOGGLE    0   // 1 = STM32 nadaje, 0 = STM32 odbiera
+
+// ============================================================
+#define TX_RX_TOGGLE    1   // 1 = STM32 nadaje, 0 = STM32 odbiera
+// ============================================================
 
 // Frame structure (packed — no padding)
 typedef struct __attribute__((packed)) {
@@ -263,6 +266,63 @@ void app_main( void )
     }
 }
 
+static void parse_frame(uint8_t *buf, uint16_t buf_len)
+{
+    printf("\r\n--- Odebrano ramke (%d B) ---\r\n", buf_len);
+
+    if (buf_len < sizeof(beko_frame_t))
+    {
+        printf("WARN: za krotka ramka\r\n");
+        return;
+    }
+
+    beko_frame_t *f = (beko_frame_t *)buf;
+
+    uint16_t crc_calc = calc_crc16(buf, offsetof(beko_frame_t, crc));
+    if (crc_calc != f->crc)
+    {
+        printf("WARN: CRC FAIL (recv=0x%04X calc=0x%04X)\r\n",
+               f->crc, crc_calc);
+        return;
+    }
+
+    printf("type=0x%02X  seq=%d  flags=0x%02X  crc=OK\r\n",
+           f->type, f->counter, f->flags);
+    printf("dst=0x%02X  src=0x%02X  enc_len=%d\r\n",
+           f->dst, f->src, f->data_len);
+
+    if (f->dst != ADDR_NODE1)
+    {
+        printf("WARN: ramka nie dla nas\r\n");
+        return;
+    }
+
+    if (f->data_len < 21)
+    {
+        printf("WARN: enc_len za maly\r\n");
+        return;
+    }
+
+    encrypted_data_t enc;
+    memcpy(enc.iv,         f->data,      16);
+    enc.ciphertext_len   = f->data_len - 16 - CRYPTO_MIC_SIZE;
+    memcpy(enc.ciphertext, f->data + 16, enc.ciphertext_len);
+    memcpy(enc.mic,        f->data + 16 + enc.ciphertext_len, CRYPTO_MIC_SIZE);
+
+    uint8_t plaintext[CRYPTO_MAX_DATA];
+    size_t  plaintext_len = 0;
+
+    int ret = crypto_decrypt(&enc, enc.ciphertext_len, plaintext, &plaintext_len);
+    if (ret == 0)
+    {
+        plaintext[plaintext_len] = '\0';
+        printf("DECRYPT OK: \"%s\"\r\n", (char *)plaintext);
+    }
+    else if (ret == -1) printf("DECRYPT FAIL: HMAC\r\n");
+    else if (ret == -2) printf("DECRYPT FAIL: Replay\r\n");
+    else                printf("DECRYPT FAIL: err=%d\r\n", ret);
+}
+
 void tx_loop(void)
 {
     static const uint8_t aes_key[16] = {
@@ -315,58 +375,33 @@ void tx_loop(void)
 
 void rx_loop(void)
 {
-	char buf[50];
-	int loop_cnt = 0;
+    static const uint8_t aes_key[16] = {
+        0xAE,0x68,0x52,0xF8,0x12,0x10,0x67,0xCC,
+        0x4B,0xF7,0xA5,0x76,0x55,0x77,0xF3,0x9E
+    };
+    crypto_init(aes_key);
 
-	printf("\r\n\r\nRX loop start\r\n");
-	int time_on_air;
-	int payload_size = BUFFER_SIZE;
-	time_on_air = Radio.TimeOnAir(MODEM_FSK, payload_size);
-	printf("Time on air: %d us for payload_size: %d bytes\r\n", time_on_air, payload_size);
+    printf("RX loop start\r\n");
+    Radio.Rx(0);
 
-	lcd_init();
-	DelayMs(100);
-	lcd_clear();
+    while(1)
+    {
+        DelayMs(25);
 
-	Radio.Rx(0);
+        if (State == RX_TIMEOUT)
+        {
+            printf("RX timeout, restarting...\r\n"); 
+            Radio.Rx(0);
+            State = RX;
+        }
 
-	while(1)
-	{
-	    DelayMs(25);
-//   		lcd_clear();
-
-		snprintf(buf, sizeof(buf), "%d %d %d %d %d ", RssiValue, trx_events_cnt.rxdone, trx_events_cnt.rxerror, trx_events_cnt.rxtimeout, loop_cnt);
-
-		if (State == RX_TIMEOUT)
-		{
-			Radio.Rx(0);
-			State = RX;
-		}
-
-		if (State == RX_DONE)
-		{
-
-			lcd_clear();
-			lcd_set_cursor(0, 0);
-			lcd_write_string((uint8_t*)buf);
-			lcd_set_cursor(1, 0);
-			lcd_write_string(Buffer);
-
-			printf("%s  \t", buf);
-			RtcGetTimeStr((uint8_t*)buf);
-			printf("Local time: %s, received: %s\r\n", buf, Buffer);
-			State = RX;
-
-//			if(Buffer[0]) {
-//					__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(15));
-//				} else {
-//					__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(160));
-//			}
-		}
-
-		loop_cnt++;
-	}
-
+        if (State == RX_DONE)
+        {
+            State = RX;
+            parse_frame(Buffer, BufferSize);
+            Radio.Rx(0);
+        }
+    }
 }
 
 void OnTxDone( void )
@@ -378,6 +413,7 @@ void OnTxDone( void )
 
 void OnRxDone( uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr )
 {
+    printf("OnRxDone: %d B, RSSI=%d\r\n", size, rssi);  // dodaj tę linię
     BufferSize = size;
     memcpy( Buffer, payload, BufferSize );
     RssiValue = rssi;
@@ -403,6 +439,7 @@ void OnRxTimeout( void )
 
 void OnRxError( void )
 {
+    printf("OnRxError!\r\n");
     State = RX_ERROR;
     trx_events_cnt.rxerror++;
     Radio.Rx(0);
