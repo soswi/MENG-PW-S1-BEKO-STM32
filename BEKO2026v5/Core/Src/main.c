@@ -77,12 +77,18 @@ cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *key, size_t key_len,
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+ * @brief Retargets printf() to USART1 via the newlib _write syscall hook.
+ *        All standard output is forwarded to the ST-Link Virtual COM Port.
+ */
 int _write(int file, char *ptr, int len)
 {
     (void)file;
     HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
     return len;
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -124,21 +130,27 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-  cmox_init_arg_t init_target = {CMOX_INIT_TARGET_AUTO, NULL};
 
+  /* Start TIM2 PWM on CH3 (PB10 → servo signal, 50 Hz). */
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
+  /* Initialise the STM32 cryptographic accelerator (X-CUBE-CRYPTOLIB). */
+  cmox_init_arg_t init_target = {CMOX_INIT_TARGET_AUTO, NULL};
   if (cmox_initialize(&init_target) != CMOX_INIT_SUCCESS)
   {
     Error_Handler();
   }
 
-  /* --- DEMO: AES-128-CTR + HMAC-SHA256 --- */
+  /* --- Crypto smoke-test and demo: AES-128-CTR + HMAC-SHA256 --- */
   static const uint8_t aes_key[16] = {
       0xAE,0x68,0x52,0xF8,0x12,0x10,0x67,0xCC,
       0x4B,0xF7,0xA5,0x76,0x55,0x77,0xF3,0x9E
   };
 
+  /* Self-test: encrypt → decrypt → tamper detection. */
   crypto_self_test();
+
+  /* Reinitialise with the application key after the self-test resets state. */
   crypto_init(aes_key);
 
   const char *msg = "BEKO_AZI=090";
@@ -166,26 +178,10 @@ int main(void)
 
   while (1)
   {
-//		for (int degree = 0; degree <= SERVO_DEGREES_RANGE; degree += SERVO_DEBUG_STEP)
-//		{
-//		   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, degrees_to_us(degree));
-//		   printf("PWM = %d\r\n", degree);
-//		   HAL_Delay(1500);
-//		}
-
 		HAL_Delay(5000);
 		printf("Start App\n");
 		app_main();
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
-//		HAL_Delay(2000);
-//
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1500);
-//		HAL_Delay(2000);
-//
-//		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 2000);
-//	    HAL_Delay(2000);
-//	  const char msg[] = "UART test\r\n";
-//	  HAL_UART_Transmit(&huart1, (uint8_t*)msg, sizeof(msg)-1, HAL_MAX_DELAY);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -598,24 +594,27 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
- * @brief Oblicza HMAC-SHA256 (Single Call)
- * @param pKey       Wskaźnik na klucz
- * @param keyLen     Długość klucza w bajtach
- * @param pData      Wskaźnik na dane do podpisania
- * @param dataLen    Długość danych w bajtach
- * @param pOutTag    Bufor na wynikowy MAC (32 bajty dla SHA256)
- * @return cmox_mac_retval_t Status operacji (CMOX_MAC_SUCCESS = OK)
+ * @brief Computes HMAC-SHA256 using the X-CUBE-CRYPTOLIB single-call API.
+ *
+ * @param key         Pointer to the HMAC key buffer.
+ * @param key_len     Key length in bytes.
+ * @param data        Pointer to the input data buffer.
+ * @param data_len    Input data length in bytes.
+ * @param output_hmac Output buffer — must hold at least 32 bytes (SHA-256 digest).
+ * @return            cmox_mac_retval_t status (CMOX_MAC_SUCCESS = OK).
  */
-cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *pKey, size_t keyLen, const uint8_t *pData, size_t dataLen, uint8_t *pOutTag)
+cmox_mac_retval_t calculate_hmac_sha256(const uint8_t *key, size_t key_len,
+                                        const uint8_t *data, size_t data_len,
+                                        uint8_t *output_hmac)
 {
   size_t computed_size;
   
-  return cmox_mac_compute(CMOX_HMAC_SHA256_ALGO, // Algorytm z przykładu
-                          pData, dataLen,        // Dane wejściowe
-                          pKey, keyLen,          // Klucz HMAC
-                          NULL, 0,               // Dane dodatkowe (opcjonalne)
-                          pOutTag, 32,           // Bufor wyjściowy i oczekiwany rozmiar
-                          &computed_size);       // Zapisany faktyczny rozmiar
+  return cmox_mac_compute(CMOX_HMAC_SHA256_ALGO,
+                          data, data_len,        /* Input data             */
+                          key,  key_len,          /* HMAC key               */
+                          NULL, 0,               /* Additional data — none */
+                          output_hmac, 32,       /* Output (32 bytes)      */
+                          &computed_size);
 }
 
 /* USER CODE END 4 */
