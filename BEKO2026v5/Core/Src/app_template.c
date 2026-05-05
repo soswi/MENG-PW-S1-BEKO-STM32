@@ -77,6 +77,9 @@ typedef enum
 #define ADDR_CENTRAL        0x01       // Raspberry Pi
 #define ADDR_NODE1          0x02       // STM32 node 1
 
+// Flags
+#define TX_RX_TOGGLE    0   // 1 = STM32 nadaje, 0 = STM32 odbiera
+
 // Frame structure (packed — no padding)
 typedef struct __attribute__((packed)) {
     uint8_t  type;          // Frame type (1B)
@@ -248,8 +251,11 @@ void app_main( void )
 #endif
     
 
-    tx_loop();
-//    rx_loop();
+    #if TX_RX_TOGGLE
+        tx_loop();
+    #else
+        rx_loop();
+    #endif
 
     while(1)
     {
